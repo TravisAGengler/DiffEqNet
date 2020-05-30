@@ -10,11 +10,35 @@ data=0 # Data will be set in generate_data
 # u0_params in this file refers to the concatination of the u0 (initial conditions) to the params in one vector
 # This is reflected in the model function
 
+function hill_pos(p, k, n)
+    # Either we must not allow fractional n, or we must not allow negative k otherwise this function will crash
+    if k < 0
+        #println("negative k value: $(k) flooring n")
+        n = floor(n)
+    end
+    p^n/(p^n + k^n)
+end
+
+function hill_neg(p, k, n)
+    # Either we must not allow fractional n, or we must not allow negative k otherwise this function will crash
+    if k < 0
+        #println("negative k value: $(k) flooring n")
+        n = floor(n)
+    end
+    k^n/(p^n + k^n)
+end
+
+function gen_reg(p, k, n, φ)
+    (hill_pos(p, k, n) * (√(1/2)*cosd(φ) + 1/2)) + (hill_neg(p, k, n) * (√(1/2)*sind(φ) + 1/2))
+end
+
 function model(du,u,p,t)
-    x, y = u
-    α, β, δ, γ = p
-    du[1] = dx = α*x - β*x*y
-    du[2] = dy = -δ*y + γ*x*y
+    # We will be modeling a system of 2 protiens. Systems with more protiens will need to be modeled differently
+    # Ignore the diffusion term for now
+    p1, p2 = u
+    α1, α2, β1, β2, k1, k2, n1, n2, φ11, φ12, φ21, φ22 = p
+    du[1] = α1*gen_reg(p1, k1, n1, φ11)*gen_reg(p2, k2, n2, φ12) - β1*p1 
+    du[2] = α2*gen_reg(p1, k1, n1, φ21)*gen_reg(p2, k2, n2, φ22) - β2*p2 
 end
 
 function predict_adjoint(u0_params) # Our 1-layer neural network
@@ -32,7 +56,7 @@ function generate_data(u0_params)
     # Generate some data to fit, and add some noise to it
     global data
     data=predict_adjoint(u0_params)
-    σN=0.1
+    σN=0.05
     data+=σN*randn(size(data))
     data=abs.(data) #Keep measurements positive
 end
@@ -49,20 +73,27 @@ function train_model(true_u0_params, init_u0_params)
 end
 
 function train_models_with_params(all_init_u0_params)
-    # For Drosophila regulation, we want to learn from two true distributions:
+    # For Drosophila protien regulation, we want to learn from two true distributions:
     # Bistable and Mutual inhibition
     # Make the true parameters a parameter to the function as well
     # For now, we will only model 2 protien interaction
     
-    # The independent variable is p (I am guessing the saturation ratio of the protien?)
-    # From 0.0 to 1.0, 0.0 being no protien and 1.0 being complete saturation
+    # The independent variable is p (Expression level of protein)
+    # From 0.0 to 1.0, 0.0 being no protien and 1.0 being complete expression
     # For two protiens, we will have p1 and p2, both independent variables
     
-    true_params = [1.5,1.0,3.0,1.0]
+    # For each protien, there are α (synthesis) and β (decay) parameters 
+    # The general form of the differential equation includes n φ parameters for each of the n protiens
+    # k and n parameters control the hill function
+    
+    #                       α1,   α2,   β1,   β2,   k1,   k2,   n1,  n2,  φ11,   φ12,   φ21,   φ22
+    true_params_bistable = [0.29, 0.19, 0.29, 0.19, 0.11, 0.08, 2.0, 2.0, 315.0, 135.0, 135.0, 315.0]
+    true_params_mutual =   [0.29, 0.19, 0.26, 0.19, 0.11, 0.12, 2.0, 2.0, 45.0,  135.0, 135.0, 45.0]
     
     for params in all_init_u0_params
+        println("Learning bistable parameters")
         # Use the initial condition from the initial_u0_param
-        true_u0_params = cat(dims=1, params[1:2], true_params)
+        true_u0_params = cat(dims=1, params[1:2], true_params_bistable)
         init_u0_params = params
         println("Starting training run with:")
         println("True params $(true_u0_params)")
@@ -71,6 +102,20 @@ function train_models_with_params(all_init_u0_params)
         fitPlot(model.minimizer)
         validationPlot(true_u0_params, model.minimizer)
     end
+
+    for params in all_init_u0_params
+        println("Learning mutual inhibition parameters")
+        # Use the initial condition from the initial_u0_param
+        true_u0_params = cat(dims=1, params[1:2], true_params_mutual)
+        init_u0_params = params
+        println("Starting training run with:")
+        println("True params $(true_u0_params)")
+        println("Initial params $(init_u0_params)")
+        model = train_model(true_u0_params, init_u0_params)
+        fitPlot(model.minimizer)
+        validationPlot(true_u0_params, model.minimizer)
+    end
+    
 end
 
 # The plot that shows how the generated data compares to the function defined by params
@@ -84,9 +129,8 @@ function fitPlot(learned_u0_params)
     scatter!(pl,tgrid, data[1,:], color=:blue)
     scatter!(pl,tgrid, data[2,:], color=:red)
     xlabel!(pl,"Time")
-    ylabel!(pl,"Population")
+    ylabel!(pl,"Protien Expression")
     title!(pl,"Model Parameter Fits")
-    #savefig("Lotka_Volterra_ParamFit.png")
     display(pl)
 end
 
@@ -101,10 +145,9 @@ function validationPlot(true_u0_params, learned_u0_params)
     scatter!(sol_actual, color=:red, vars=(0,2))
     plot!(pl, sol_fit, lw=2, legend=false, color=:blue, vars=(0,1))
     plot!(pl, sol_fit, lw=2, color=:red, vars=(0,2))
-    xlabel!(pl,"Rabbits")
-    ylabel!(pl,"Lynx")
+    xlabel!(pl,"Time")
+    ylabel!(pl,"Protien Expression")
     title!(pl,"Validation Plot")
-    #savefig("Lotka_Volterra_Validation_Plot.png")
     display(pl)
 end
 
