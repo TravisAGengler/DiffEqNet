@@ -6,30 +6,35 @@ tstart=0.0
 tend=10.0
 sampling=0.1
 data=0 # Data will be set in generate_data
+loss_history=zeros(0) # This will be populated each training round and graphed at the end
+max_itrs=500 # The number of iterations to train for
 
 # u0_params in this file refers to the concatination of the u0 (initial conditions) to the params in one vector
 # This is reflected in the model function
 
+# For Drosophila protien regulation, we want to learn from two true distributions:
+# Bistable and Mutual inhibition
+# Make the true parameters a parameter to the function as well
+# For now, we will only model 2 protien interaction
+
+# The independent variable is p (Expression level of protein)
+# From 0.0 to 1.0, 0.0 being no protien and 1.0 being complete expression
+# For two protiens, we will have p1 and p2, both independent variables
+
+# For each protien, there are α (synthesis) and β (decay) parameters 
+# The general form of the differential equation includes n φ parameters for each of the n protiens
+# k and n parameters control the hill function
+
 function hill_pos(p, k, n)
-    # Either we must not allow fractional n, or we must not allow negative k otherwise this function will crash
-    if k < 0
-        #println("negative k value: $(k) flooring n")
-        n = floor(n)
-    end
     p^n/(p^n + k^n)
 end
 
 function hill_neg(p, k, n)
-    # Either we must not allow fractional n, or we must not allow negative k otherwise this function will crash
-    if k < 0
-        #println("negative k value: $(k) flooring n")
-        n = floor(n)
-    end
     k^n/(p^n + k^n)
 end
 
 function gen_reg(p, k, n, φ)
-    (hill_pos(p, k, n) * (√(1/2)*cosd(φ) + 1/2)) + (hill_neg(p, k, n) * (√(1/2)*sind(φ) + 1/2))
+    (hill_pos(p, k, n) * (√(1/2)*cosd(φ*360) + 1/2)) + (hill_neg(p, k, n) * (√(1/2)*sind(φ*360) + 1/2))
 end
 
 function model(du,u,p,t)
@@ -61,35 +66,41 @@ function generate_data(u0_params)
     data=abs.(data) #Keep measurements positive
 end
 
+function loss_callback(u0_params, loss)
+    append!(loss_history, loss)
+    return false
+end
+
 function train_model(true_u0_params, init_u0_params)
     # Generate data for each trial. This mutates the global data variable
     generate_data(true_u0_params)
     
+    global loss_history
+    loss_history = zeros(0)
+    
     println("The initial loss is $(loss_adjoint(init_u0_params)[1])")
-    resinit=DiffEqFlux.sciml_train(loss_adjoint,init_u0_params,ADAM(), maxiters=3000)
-    res = DiffEqFlux.sciml_train(loss_adjoint,resinit.minimizer,BFGS(initial_stepnorm = 1e-5))
+    global max_itrs
+    res=DiffEqFlux.sciml_train(loss_adjoint,init_u0_params,ADAM(), maxiters=max_itrs, cb=loss_callback)
     println("The learned parameters are $(res.minimizer) with final loss of $(res.minimum)")
     return(res)
 end
 
-function train_models_with_params(all_init_u0_params)
-    # For Drosophila protien regulation, we want to learn from two true distributions:
-    # Bistable and Mutual inhibition
-    # Make the true parameters a parameter to the function as well
-    # For now, we will only model 2 protien interaction
+function train_bistable_model_with_params(all_init_u0_params)    
+    true_params_bistable = 
+       [0.29,           # α1
+        0.19,           # α2
+        0.29,           # β1
+        0.19,           # β2
+        0.11,           # k1
+        0.08,           # k2
+        2.0,            # n1
+        2.0,            # n2
+        315.0 / 360.0,  # φ11
+        135.0 / 360.0,  # φ12
+        135.0 / 360.0,  # φ21
+        315.0 / 360.0]  # φ22
     
-    # The independent variable is p (Expression level of protein)
-    # From 0.0 to 1.0, 0.0 being no protien and 1.0 being complete expression
-    # For two protiens, we will have p1 and p2, both independent variables
-    
-    # For each protien, there are α (synthesis) and β (decay) parameters 
-    # The general form of the differential equation includes n φ parameters for each of the n protiens
-    # k and n parameters control the hill function
-    
-    #                       α1,   α2,   β1,   β2,   k1,   k2,   n1,  n2,  φ11,   φ12,   φ21,   φ22
-    true_params_bistable = [0.29, 0.19, 0.29, 0.19, 0.11, 0.08, 2.0, 2.0, 315.0, 135.0, 135.0, 315.0]
-    true_params_mutual =   [0.29, 0.19, 0.26, 0.19, 0.11, 0.12, 2.0, 2.0, 45.0,  135.0, 135.0, 45.0]
-    
+    true_and_learned_u0_params =  Any[]
     for params in all_init_u0_params
         println("Learning bistable parameters")
         # Use the initial condition from the initial_u0_param
@@ -99,10 +110,32 @@ function train_models_with_params(all_init_u0_params)
         println("True params $(true_u0_params)")
         println("Initial params $(init_u0_params)")
         model = train_model(true_u0_params, init_u0_params)
-        fitPlot(model.minimizer)
-        validationPlot(true_u0_params, model.minimizer)
+        learned_u0_params = model.minimizer
+        dataPlot(learned_u0_params)
+        validationPlot(true_u0_params, learned_u0_params)
+        lossPlot(loss_history)
+        push!(true_and_learned_u0_params, [true_u0_params, learned_u0_params])
     end
+    phasePlot(true_and_learned_u0_params)
+end
 
+
+function train_mutual_inhib_model_with_params(all_init_u0_params)   
+    true_params_mutual = 
+       [0.29,           # α1
+        0.19,           # α2
+        0.26,           # β1
+        0.19,           # β2
+        0.11,           # k1
+        0.12,           # k2
+        2.0,            # n1
+        2.0,            # n2
+        45.0  / 360.0,  # φ11
+        135.0 / 360.0,  # φ12
+        135.0 / 360.0,  # φ21
+        45.0  / 360.0]  # φ22
+
+    true_and_learned_u0_params = Any[]
     for params in all_init_u0_params
         println("Learning mutual inhibition parameters")
         # Use the initial condition from the initial_u0_param
@@ -112,42 +145,106 @@ function train_models_with_params(all_init_u0_params)
         println("True params $(true_u0_params)")
         println("Initial params $(init_u0_params)")
         model = train_model(true_u0_params, init_u0_params)
-        fitPlot(model.minimizer)
-        validationPlot(true_u0_params, model.minimizer)
+        learned_u0_params = model.minimizer
+        dataPlot(learned_u0_params)
+        validationPlot(true_u0_params, learned_u0_params)
+        lossPlot(loss_history)
+        push!(true_and_learned_u0_params, [true_u0_params, learned_u0_params])
     end
-    
+    phasePlot(true_and_learned_u0_params)
 end
 
+
 # The plot that shows how the generated data compares to the function defined by params
-function fitPlot(learned_u0_params)
+# The solid line is the actual model
+# The scatter plot is the generated data
+function dataPlot(learned_u0_params)
     tspan=(tstart,tend)
-    sol_fit=solve(ODEProblem(model,learned_u0_params[1:2],tspan,learned_u0_params[3:end]), Tsit5())
+    sol_learned=solve(ODEProblem(model,learned_u0_params[1:2],tspan,learned_u0_params[3:end]), Tsit5())
     tgrid=tstart:sampling:tend
     
     # Plot
-    pl=plot(sol_fit, lw=2, legend=false)
-    scatter!(pl,tgrid, data[1,:], color=:blue)
-    scatter!(pl,tgrid, data[2,:], color=:red)
+    pl=plot(sol_learned, lw=2, color=:blue, vars=(0,1), label="Learned model p1")
+    plot!(pl, sol_learned, lw=2, color=:red, vars=(0,2), label="Learned model p2")
+    scatter!(pl,tgrid, data[1,:], color=:blue, label="Generated Data p1")
+    scatter!(pl,tgrid, data[2,:], color=:red,  label="Generated Data p2")
     xlabel!(pl,"Time")
     ylabel!(pl,"Protien Expression")
-    title!(pl,"Model Parameter Fits")
+    title!(pl,"Data Fit with Learned Model")
     display(pl)
 end
 
 # The plot that shows how the learned parameters compares to data generated from the actual model
+# The solid line is the actual model
+# The scatter line is the learned model
 function validationPlot(true_u0_params, learned_u0_params)
     tspan=(tstart,tend)
-    sol_fit=solve(ODEProblem(model, learned_u0_params[1:2], tspan, learned_u0_params[3:end]), Tsit5())
-    sol_actual=solve(ODEProblem(model, true_u0_params[1:2], tspan, true_u0_params[3:end]), Tsit5(), saveat=0.0:0.1:10.0)
+    sol_learned=solve(ODEProblem(model, learned_u0_params[1:2], tspan, learned_u0_params[3:end]), Tsit5())
+    sol_actual=solve(ODEProblem(model, true_u0_params[1:2], tspan, true_u0_params[3:end]), Tsit5())
     
     # Plot
-    pl=scatter(sol_actual, lw=2.0, color=:blue, vars=(0,1))
-    scatter!(sol_actual, color=:red, vars=(0,2))
-    plot!(pl, sol_fit, lw=2, legend=false, color=:blue, vars=(0,1))
-    plot!(pl, sol_fit, lw=2, color=:red, vars=(0,2))
+    pl = plot(sol_actual, lw=2, color=:blue, linestyle = :dot, vars=(0,1), label="True model p1")
+    plot!(pl, sol_actual, lw=2, color=:red, linestyle = :dot, vars=(0,2), label="True model p2")
+    plot!(pl, sol_learned, lw=2, color=:blue, vars=(0,1), label="Learned model p1")
+    plot!(pl, sol_learned, lw=2, color=:red, vars=(0,2), label="Learned model p2")
     xlabel!(pl,"Time")
     ylabel!(pl,"Protien Expression")
     title!(pl,"Validation Plot")
+    display(pl)
+end
+
+# The plot that shows how the loss changed over the learning iterations
+function lossPlot(loss_history)    
+    # Plot
+    x = 0:max_itrs
+    pl = plot(x, loss_history, lw=2, legend=false, color=:red)
+    xlabel!(pl,"Iteration")
+    ylabel!(pl,"Training Loss")
+    title!(pl,"Loss Plot")
+    display(pl)
+end
+
+# The plot that shows the phase dynamics between the two variables p1 and p2 for multiple initial conditions
+function phasePlot(true_and_learned_u0_params)
+    colors=[:blue, :red, :green, :purple, :black, :cyan, :orange, :gray]
+    tspan=(tstart,tend)
+    pl = nothing
+    for i in eachindex(true_and_learned_u0_params)
+        cl = colors[i]
+        tr = true_and_learned_u0_params[i][1]
+        ln = true_and_learned_u0_params[i][2]
+        sol_actual=solve(ODEProblem(model, tr[1:2], tspan, tr[3:end]), Tsit5(), saveat=0.0:0.01:10.0)
+        sol_learned=solve(ODEProblem(model, ln[1:2], tspan, ln[3:end]), Tsit5(), saveat=0.0:0.01:10.0)
+        
+        p1_actual = zeros(0)
+        p2_actual = zeros(0)
+        for j in eachindex(sol_actual.u)
+            append!(p1_actual, sol_actual[j][1])
+            append!(p2_actual, sol_actual[j][2])
+        end
+
+        p1_learned = zeros(0)
+        p2_learned = zeros(0)
+        for j in eachindex(sol_learned.u)
+            append!(p1_learned, sol_learned[j][1])
+            append!(p2_learned, sol_learned[j][2])
+        end
+        
+        if(isnothing(pl))
+            pl = plot(p1_actual, p2_actual, lw=2, color=cl, linestyle = :dot, label="True Init p1:$(p1_actual[1]) p2:$(p2_actual[1])")
+        else
+            plot!(pl, p1_actual, p2_actual, lw=2, color=cl, linestyle = :dot, label="True Init p1:$(p1_actual[1]) p2:$(p2_actual[1])")
+        end
+        p1_round = round(p1_learned[1], digits=2)
+        p2_round = round(p2_learned[1], digits=2)
+        plot!(pl, p1_learned, p2_learned, lw=2, color=cl, label="Predicted Init p1:$(p1_round) p2:$(p2_round)") 
+    end
+    # Plot
+    # p1 is x axis 
+    # p2 is y axis 
+    xlabel!(pl,"P1(t)")
+    ylabel!(pl,"P2(t)")
+    title!(pl,"Phase Dynamics P1(t)P2(t)")
     display(pl)
 end
 
