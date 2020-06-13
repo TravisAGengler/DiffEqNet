@@ -6,11 +6,14 @@ tstart=0.0
 tend=10.0
 sampling=0.1
 data=0 # Data will be set in generate_data
-loss_history=zeros(0) # This will be populated each training round and graphed at the end
-max_itrs=500 # The number of iterations to train for
+data_std_dev = 0.02 # Standard deviation on the synthetic data distribution
+cur_u0=zeros(0) # This will be populated each training round. This way, we do not "learn" the u0 params
 
-# u0_params in this file refers to the concatination of the u0 (initial conditions) to the params in one vector
-# This is reflected in the model function
+loss_history=zeros(0) # This will be populated each training round and graphed at the end
+max_itrs=5000 # The max number of iterations to train for
+loss_threshold = 0.001 # If loss doesnt change by this much in loss_threshold_itrs iterations, stop training
+loss_threshold_itrs = 100 # The number of iterations to stop at if loss doesnt change by loss_threshold
+loss_no_sig_change_itrs = 0 # The number of iterations we have not seen significant change in loss as defined above
 
 # For Drosophila protien regulation, we want to learn from two true distributions:
 # Bistable and Mutual inhibition
@@ -26,10 +29,28 @@ max_itrs=500 # The number of iterations to train for
 # k and n parameters control the hill function
 
 function hill_pos(p, k, n)
+    if p < 0
+        println("pos p: $(p)")
+    end
+    if k < 0
+        println("pos k: $(k)")
+    end
+    if n < 0
+        println("pos n: $(n)")
+    end
     p^n/(p^n + k^n)
 end
 
 function hill_neg(p, k, n)
+    if p < 0
+        println("neg p: $(p)")
+    end
+    if k < 0
+        println("neg k: $(k)")
+    end
+    if n < 0
+        println("neg n: $(n)")
+    end
     k^n/(p^n + k^n)
 end
 
@@ -40,52 +61,133 @@ end
 function model(du,u,p,t)
     # We will be modeling a system of 2 protiens. Systems with more protiens will need to be modeled differently
     # Ignore the diffusion term for now
-    p1, p2 = u
-    α1, α2, β1, β2, k1, k2, n1, n2, φ11, φ12, φ21, φ22 = p
+    # TRICKY: For some reason, p sometimes assume a negative value?
+    p1, p2 = abs.(u)
+    # Negative values do not make sense in the context of this physical model. Take abs
+    α1, α2, β1, β2, k1, k2, n1, n2, φ11, φ12, φ21, φ22 = abs.(p)
     du[1] = α1*gen_reg(p1, k1, n1, φ11)*gen_reg(p2, k2, n2, φ12) - β1*p1 
     du[2] = α2*gen_reg(p1, k1, n1, φ21)*gen_reg(p2, k2, n2, φ22) - β2*p2 
 end
 
-function predict_adjoint(u0_params) # Our 1-layer neural network
-    prob=ODEProblem(model,u0_params[1:2],(tstart,tend), u0_params[3:end])
-    Array(concrete_solve(prob,Tsit5(),u0_params[1:2],u0_params[3:end],saveat=tstart:sampling:tend, abstol=1e-8,reltol=1e-6))
+function predict_adjoint(params) # Our 1-layer neural network
+    prob=ODEProblem(model,cur_u0,(tstart,tend), params)
+    Array(concrete_solve(prob,Tsit5(),cur_u0, params,saveat=tstart:sampling:tend, abstol=1e-8,reltol=1e-6))
 end
 
-function loss_adjoint(u0_params)
-    prediction = predict_adjoint(u0_params)
-    loss = sum(abs2,prediction - data)
+function loss_adjoint(params)
+    prediction = predict_adjoint(params)
+    loss = sum(abs2, prediction - data)
     return loss
-end;
+end
 
-function generate_data(u0_params)
+function report_params(u0, true_params, params)
+    p1, p2 = u0
+    α1_t, α2_t, β1_t, β2_t, k1_t, k2_t, n1_t, n2_t, φ11_t, φ12_t, φ21_t, φ22_t = true_params
+    α1, α2, β1, β2, k1, k2, n1, n2, φ11, φ12, φ21, φ22 = params
+    println("p1: $(p1)")
+    println("p2: $(p2)")
+    println("α1_true / α1: $(α1_t) / $(α1)")
+    println("α2_true / α2: $(α2_t) / $(α2)")
+    println("β1_true / β1: $(β1_t) / $(β1)")
+    println("β2_true / β2: $(β2_t) / $(β2)")
+    println("k1_true / k1: $(k1_t) / $(k1)")
+    println("k2_true / k2: $(k2_t) / $(k2)")
+    println("n1_true / n1: $(n1_t) / $(n1)")
+    println("n2_true / n2: $(n2_t) / $(n2)")
+    # These parameters are normalized between 0 and 1    
+    println("φ11_true / φ11: $(φ11_t * 360) / $(φ11 * 360)")
+    println("φ12_true / φ12: $(φ12_t * 360) / $(φ12 * 360)")
+    println("φ21_true / φ21: $(φ21_t * 360) / $(φ21 * 360)")
+    println("φ22_true / φ22: $(φ22_t * 360) / $(φ22 * 360)")
+end
+
+function generate_data(params)
     # Generate some data to fit, and add some noise to it
     global data
-    data=predict_adjoint(u0_params)
-    σN=0.05
+    data=predict_adjoint(params)
+    σN=data_std_dev
     data+=σN*randn(size(data))
     data=abs.(data) #Keep measurements positive
 end
 
-function loss_callback(u0_params, loss)
+function generate_init_params(n_params)
+    init_params=zeros(n_params)
+    for i in eachindex(init_params)
+        init_params[i] = 1.0 - rand()
+    end
+    return init_params
+end
+
+function loss_callback(params, loss)
+    global loss_no_sig_change_itrs
+    
+    if size(loss_history)[1] > 0
+        loss_delt = abs.(last(loss_history) - loss)
+    else
+        loss_delt = 0
+    end
+    
     append!(loss_history, loss)
+    
+    if loss_delt > loss_threshold
+        loss_no_sig_change_itrs = 0
+    else
+        loss_no_sig_change_itrs += 1
+        if loss_no_sig_change_itrs >= loss_threshold_itrs
+            return true
+        end
+    end
     return false
 end
 
-function train_model(true_u0_params, init_u0_params)
-    # Generate data for each trial. This mutates the global data variable
-    generate_data(true_u0_params)
-    
+function train_model(true_params, init_params)
+    # Reset our loss history
     global loss_history
     loss_history = zeros(0)
     
-    println("The initial loss is $(loss_adjoint(init_u0_params)[1])")
-    global max_itrs
-    res=DiffEqFlux.sciml_train(loss_adjoint,init_u0_params,ADAM(), maxiters=max_itrs, cb=loss_callback)
-    println("The learned parameters are $(res.minimizer) with final loss of $(res.minimum)")
+    # Train the model
+    res=DiffEqFlux.sciml_train(loss_adjoint, init_params, ADAM(), maxiters=max_itrs, cb=loss_callback)
     return(res)
 end
 
-function train_bistable_model_with_params(all_init_u0_params)    
+function train_model_with_params(all_u0, true_params)
+    global cur_u0
+    global loss_no_sig_change_itrs
+    
+    init_params = generate_init_params(12)
+    true_and_learned_params =  Any[]
+    for u0 in all_u0
+        cur_u0 = u0
+        loss_no_sig_change_itrs = 0
+        # Generate synthetic data for each trial run
+        generate_data(true_params)
+        
+        # Report initial conditions and parameters
+        println("Initial loss: $(loss_adjoint(init_params)[1])")
+        
+        # Train model
+        model = train_model(true_params, init_params)
+        # The model can learn negative parameters, but our calculations account for that.
+        # Use the abs of the params here for our reporting
+        learned_params = abs.(model.minimizer)
+        
+        # Report learned parameters
+        println("Finished training after $(size(loss_history)[1]) iterations")
+        println("Learned params")
+        report_params(cur_u0, true_params, learned_params)
+        println("Learned loss: $(loss_adjoint(learned_params)[1])")
+        
+        # Make plots
+        dataPlot(learned_params)
+        validationPlot(true_params, learned_params)
+        lossPlot(loss_history)
+        push!(true_and_learned_params, [true_params, learned_params])
+    end
+    phasePlot(all_u0, true_and_learned_params)
+end
+
+function train_bistable_model_with_params(all_u0)
+    println("Learning bistable parameters")
     true_params_bistable = 
        [0.29,           # α1
         0.19,           # α2
@@ -99,28 +201,11 @@ function train_bistable_model_with_params(all_init_u0_params)
         135.0 / 360.0,  # φ12
         135.0 / 360.0,  # φ21
         315.0 / 360.0]  # φ22
-    
-    true_and_learned_u0_params =  Any[]
-    for params in all_init_u0_params
-        println("Learning bistable parameters")
-        # Use the initial condition from the initial_u0_param
-        true_u0_params = cat(dims=1, params[1:2], true_params_bistable)
-        init_u0_params = params
-        println("Starting training run with:")
-        println("True params $(true_u0_params)")
-        println("Initial params $(init_u0_params)")
-        model = train_model(true_u0_params, init_u0_params)
-        learned_u0_params = model.minimizer
-        dataPlot(learned_u0_params)
-        validationPlot(true_u0_params, learned_u0_params)
-        lossPlot(loss_history)
-        push!(true_and_learned_u0_params, [true_u0_params, learned_u0_params])
-    end
-    phasePlot(true_and_learned_u0_params)
+    train_model_with_params(all_u0, true_params_bistable)
 end
 
 
-function train_mutual_inhib_model_with_params(all_init_u0_params)   
+function train_mutual_inhib_model_with_params(all_u0)   
     true_params_mutual = 
        [0.29,           # α1
         0.19,           # α2
@@ -134,33 +219,15 @@ function train_mutual_inhib_model_with_params(all_init_u0_params)
         135.0 / 360.0,  # φ12
         135.0 / 360.0,  # φ21
         45.0  / 360.0]  # φ22
-
-    true_and_learned_u0_params = Any[]
-    for params in all_init_u0_params
-        println("Learning mutual inhibition parameters")
-        # Use the initial condition from the initial_u0_param
-        true_u0_params = cat(dims=1, params[1:2], true_params_mutual)
-        init_u0_params = params
-        println("Starting training run with:")
-        println("True params $(true_u0_params)")
-        println("Initial params $(init_u0_params)")
-        model = train_model(true_u0_params, init_u0_params)
-        learned_u0_params = model.minimizer
-        dataPlot(learned_u0_params)
-        validationPlot(true_u0_params, learned_u0_params)
-        lossPlot(loss_history)
-        push!(true_and_learned_u0_params, [true_u0_params, learned_u0_params])
-    end
-    phasePlot(true_and_learned_u0_params)
+    train_model_with_params(all_u0, true_params_mutual)
 end
-
 
 # The plot that shows how the generated data compares to the function defined by params
 # The solid line is the actual model
 # The scatter plot is the generated data
-function dataPlot(learned_u0_params)
+function dataPlot(learned_params)
     tspan=(tstart,tend)
-    sol_learned=solve(ODEProblem(model,learned_u0_params[1:2],tspan,learned_u0_params[3:end]), Tsit5())
+    sol_learned=solve(ODEProblem(model,cur_u0,tspan,learned_params), Tsit5())
     tgrid=tstart:sampling:tend
     
     # Plot
@@ -177,10 +244,10 @@ end
 # The plot that shows how the learned parameters compares to data generated from the actual model
 # The solid line is the actual model
 # The scatter line is the learned model
-function validationPlot(true_u0_params, learned_u0_params)
+function validationPlot(true_params, learned_params)
     tspan=(tstart,tend)
-    sol_learned=solve(ODEProblem(model, learned_u0_params[1:2], tspan, learned_u0_params[3:end]), Tsit5())
-    sol_actual=solve(ODEProblem(model, true_u0_params[1:2], tspan, true_u0_params[3:end]), Tsit5())
+    sol_learned=solve(ODEProblem(model, cur_u0, tspan, learned_params), Tsit5())
+    sol_actual=solve(ODEProblem(model, cur_u0, tspan, true_params), Tsit5())
     
     # Plot
     pl = plot(sol_actual, lw=2, color=:blue, linestyle = :dot, vars=(0,1), label="True model p1")
@@ -196,7 +263,8 @@ end
 # The plot that shows how the loss changed over the learning iterations
 function lossPlot(loss_history)    
     # Plot
-    x = 0:max_itrs
+    last_x = size(loss_history)[1]-1
+    x = 0:last_x
     pl = plot(x, loss_history, lw=2, legend=false, color=:red)
     xlabel!(pl,"Iteration")
     ylabel!(pl,"Training Loss")
@@ -205,16 +273,18 @@ function lossPlot(loss_history)
 end
 
 # The plot that shows the phase dynamics between the two variables p1 and p2 for multiple initial conditions
-function phasePlot(true_and_learned_u0_params)
+function phasePlot(all_u0, true_and_learned_params)
     colors=[:blue, :red, :green, :purple, :black, :cyan, :orange, :gray]
     tspan=(tstart,tend)
     pl = nothing
-    for i in eachindex(true_and_learned_u0_params)
+    global cur_u0
+    for i in eachindex(true_and_learned_params)
+        cur_u0 = all_u0[i]
         cl = colors[i]
-        tr = true_and_learned_u0_params[i][1]
-        ln = true_and_learned_u0_params[i][2]
-        sol_actual=solve(ODEProblem(model, tr[1:2], tspan, tr[3:end]), Tsit5(), saveat=0.0:0.01:10.0)
-        sol_learned=solve(ODEProblem(model, ln[1:2], tspan, ln[3:end]), Tsit5(), saveat=0.0:0.01:10.0)
+        tr = true_and_learned_params[i][1]
+        ln = true_and_learned_params[i][2]
+        sol_actual=solve(ODEProblem(model, cur_u0, tspan, tr), Tsit5(), saveat=0.0:0.01:10.0)
+        sol_learned=solve(ODEProblem(model, cur_u0, tspan, ln), Tsit5(), saveat=0.0:0.01:10.0)
         
         p1_actual = zeros(0)
         p2_actual = zeros(0)
