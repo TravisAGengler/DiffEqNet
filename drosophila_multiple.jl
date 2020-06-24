@@ -8,6 +8,7 @@ sampling=0.01
 data=zeros(0) # Data will be set in generate_data
 data_std_dev = 0.02 # Standard deviation on the synthetic data distribution
 cur_u0=zeros(0) # This will be populated each training round. This way, we do not "learn" the u0 params
+cur_m=0 # A global to hold the current m (number of proteins interacting) for the training run
 
 loss_history=zeros(0) # This will be populated each training round and graphed at the end
 max_itrs=5000 # The max number of iterations to train for
@@ -16,47 +17,17 @@ loss_threshold_itrs = 100 # The number of iterations to stop at if loss doesnt c
 loss_no_sig_change_itrs = 0 # The number of iterations we have not seen significant change in loss as defined above
 
 # These will be populated each training round and graphed at the end
-φ11_history=zeros(0) 
-φ12_history=zeros(0)
-φ21_history=zeros(0)
-φ22_history=zeros(0)
+φ_history=[]
 
-# For Drosophila protien regulation, we want to learn from two true distributions:
-# Bistable and Mutual inhibition
-# Make the true parameters a parameter to the function as well
-# For now, we will only model 2 protien interaction
-
-# The independent variable is p (Expression level of protein)
-# From 0.0 to 1.0, 0.0 being no protien and 1.0 being complete expression
-# For two protiens, we will have p1 and p2, both independent variables
-
-# For each protien, there are α (synthesis) and β (decay) parameters 
-# The general form of the differential equation includes n φ parameters for each of the n protiens
-# k and n parameters control the hill function
+# Right now, we only have 8 unique colors defined. That means we can display up to 8 proteins
+# TODO: Add more colors or generate colors on the fly?
+colors=[:blue, :red, :green, :purple, :black, :cyan, :orange, :gray]
 
 function hill_pos(p, k, n)
-    if p < 0
-        println("pos p: $(p)")
-    end
-    if k < 0
-        println("pos k: $(k)")
-    end
-    if n < 0
-        println("pos n: $(n)")
-    end
     p^n/(p^n + k^n)
 end
 
 function hill_neg(p, k, n)
-    if p < 0
-        println("neg p: $(p)")
-    end
-    if k < 0
-        println("neg k: $(k)")
-    end
-    if n < 0
-        println("neg n: $(n)")
-    end
     k^n/(p^n + k^n)
 end
 
@@ -65,19 +36,33 @@ function gen_reg(p, k, n, φ)
 end
 
 function model(du,u,p,t)
-    # We will be modeling a system of 2 protiens. Systems with more protiens will need to be modeled differently
-    # Ignore the diffusion term for now
-    # TRICKY: For some reason, p sometimes assume a negative value?
-    p1, p2 = abs.(u)
-    # Negative values do not make sense in the context of this physical model. Take abs
-    α1, α2, β1, β2, k1, k2, n1, n2, φ11, φ12, φ21, φ22 = abs.(p)
-    du[1] = α1*gen_reg(p1, k1, n1, φ11)*gen_reg(p2, k2, n2, φ12) - β1*p1 
-    du[2] = α2*gen_reg(p1, k1, n1, φ21)*gen_reg(p2, k2, n2, φ22) - β2*p2 
+    # u looks like p1, p2, p3, ..., pn
+    # p looks like α1, β1, k1, n1, φ11, φ12, φ13, ..., φ1n
+    #              α2, β2, k2, n2, φ21, φ22, φ23, ..., φ2n
+    #              α1, β1, k1, n1, φ31, φ32, φ33, ..., φ3n
+    #              ...
+    #              αn, βn, kn, nn, φn1, φn2, φn3, ..., φnn
+    
+    absu = abs.(u)
+    m = size(absu)[1]
+    p_idx = 1
+    for i in 1:m
+        pi = absu[i]
+        αi, βi, ki, ni = p[p_idx : p_idx += 3]
+        φ_vals = p[p_idx : p_idx += m]
+        gen_reg_prod = 1
+        for j in 1:m
+            pj = absu[j]
+            φij = φ_vals[j]
+            gen_reg_prod *= gen_reg(pj, ki, ni, φij)
+        end
+        du[i] = αi * gen_reg_prod - βi*pi
+    end
 end
 
 function predict_adjoint(params) # Our 1-layer neural network
     prob=ODEProblem(model,cur_u0,(tstart,tend), params)
-    Array(concrete_solve(prob,Tsit5(),cur_u0, params,saveat=tstart:sampling:tend, abstol=1e-8,reltol=1e-6, alg_hints=[:stiff]))
+    Array(concrete_solve(prob,Tsit5(),cur_u0, params, saveat=tstart:sampling:tend, abstol=1e-8, reltol=1e-6, alg_hints=[:stiff]))
 end
 
 function loss_adjoint(params)
@@ -134,10 +119,17 @@ function loss_callback(params, loss)
     end
     
     append!(loss_history, loss)
-    append!(φ11_history, params[9] * 360)
-    append!(φ12_history, params[10] * 360)
-    append!(φ21_history, params[11] * 360)
-    append!(φ22_history, params[12] * 360)
+    
+    m = size(cur_u0)[1]
+    for i in 1:m
+        # TODO: Update this
+        #append!(φ11_history, params[9] * 360)
+        #append!(φ12_history, params[10] * 360)
+        #append!(φ21_history, params[11] * 360)
+        #append!(φ22_history, params[12] * 360)
+    end
+    
+
     
     if loss_delt > loss_threshold
         loss_no_sig_change_itrs = 0
@@ -153,15 +145,10 @@ end
 function train_model(true_params, init_params)
     # Reset our loss history
     global loss_history
-    global φ11_history
-    global φ12_history
-    global φ21_history
-    global φ22_history
+    global φ_history
     loss_history = zeros(0)
-    φ11_history=zeros(0) 
-    φ12_history=zeros(0)
-    φ21_history=zeros(0)
-    φ22_history=zeros(0)
+    # Prepare the history to 
+    φ_history=[Float64[] for i=1:cur_m^2, j=1:1]
     
     # Train the model
     res=DiffEqFlux.sciml_train(loss_adjoint, init_params, ADAM(), maxiters=max_itrs, cb=loss_callback)
@@ -170,12 +157,18 @@ end
 
 function train_model_with_params(all_u0, true_params)
     global cur_u0
+    global cur_m
     global loss_no_sig_change_itrs
     
-    init_params = generate_init_params(12)
     true_and_learned_params =  Any[]
     for u0 in all_u0
         cur_u0 = u0
+        cur_m = size(cur_u0)[1]
+        # We need to learn m^2 + 4*m parameters.
+        # 4*m hill function parameters
+        # m^2 phi parameters
+        init_params = generate_init_params(cur_m^2 + 4*cur_m)
+        
         loss_no_sig_change_itrs = 0
         # Generate synthetic data for each trial run
         generate_data(true_params)
@@ -199,10 +192,7 @@ function train_model_with_params(all_u0, true_params)
         dataPlot(learned_params)
         validationPlot(true_params, learned_params)
         lossPlot(loss_history)
-        phi_plot(φ11_history, "11")
-        phi_plot(φ12_history, "12")
-        phi_plot(φ21_history, "21")
-        phi_plot(φ22_history, "22")
+        phi_plot(φ_history)
         push!(true_and_learned_params, [true_params, learned_params])
     end
     phasePlot(all_u0, true_and_learned_params)
@@ -210,6 +200,8 @@ end
 
 function train_bistable_model_with_params(all_u0)
     println("Learning bistable parameters")
+    # TODO: What are the true parameters for systems of more than 2 proteins?
+    # There must be some way to generate this.
     true_params_bistable = 
        [0.29,           # α1
         0.19,           # α2
@@ -227,7 +219,9 @@ function train_bistable_model_with_params(all_u0)
 end
 
 
-function train_mutual_inhib_model_with_params(all_u0)   
+function train_mutual_inhib_model_with_params(all_u0)
+    # TODO: What are the true parameters for systems of more than 2 proteins?
+    # There must be some way to generate this.
     true_params_mutual = 
        [0.29,           # α1
         0.19,           # α2
@@ -253,6 +247,7 @@ function dataPlot(learned_params)
     tgrid=tstart:sampling:tend
     
     # Plot
+    # TODO: Update this
     pl=plot(sol_learned, lw=2, color=:blue, vars=(0,1), label="Learned model p1")
     plot!(pl, sol_learned, lw=2, color=:red, vars=(0,2), label="Learned model p2")
     scatter!(pl,tgrid, data[1,:], color=:blue, label="Generated Data p1")
@@ -266,7 +261,7 @@ end
 # The plot that shows how the learned parameters compares to data generated from the actual model
 # The solid line is the actual model
 # The scatter line is the learned model
-function validationPlot(true_params, learned_params)
+function validationPlot(true_params, learned_params, m)
     tspan=(tstart,tend)
     sol_learned=solve(ODEProblem(model, cur_u0, tspan, learned_params), Tsit5())
     sol_actual=solve(ODEProblem(model, cur_u0, tspan, true_params), Tsit5())
@@ -295,6 +290,9 @@ function lossPlot(loss_history)
 end
 
 # The plot that shows the phase dynamics between the two variables p1 and p2 for multiple initial conditions
+# TODO: Do we want to extend the phase plot into n dimensions..?
+# Or do we want to do a phase plot for each combination?
+#=
 function phasePlot(all_u0, true_and_learned_params)
     colors=[:blue, :red, :green, :purple, :black, :cyan, :orange, :gray]
     tspan=(tstart,tend)
@@ -339,8 +337,16 @@ function phasePlot(all_u0, true_and_learned_params)
     title!(pl,"Phase Dynamics P1(t)P2(t)")
     display(pl)
 end
+=#
 
-function phi_plot(φ_history, subscript)
+function phi_plot(φ_history)
+    # The phi history is a 2d array
+    # Dimension 1 is each phi
+    # Dimension 2 is the history of each phi
+    
+    # Plot each phi and display each plot separately
+    
+    
     pl = histogram(φ_history)
     xlabel!(pl,"Phi")
     ylabel!(pl,"Frequency")
