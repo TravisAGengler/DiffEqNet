@@ -29,10 +29,10 @@ data_std_dev = 0.02 # Standard deviation on the synthetic data distribution
 
 loss_history=[] # This will be populated each training round and graphed at the end
 itrs=0 # The number of iterations we have been training for
-max_itrs=5000 # The max number of iterations to train for
+max_itrs=500 # The max number of iterations to train for
 loss_no_decrease_max = 100 # The number of iterations to stop at if loss doesnt decrease
 loss_no_decrease = 0 # The number of iterations we have not had loss decrease
-loss_delt_threshold=0.01 # The minimum delta required to count as "changed" in loss
+loss_delt_threshold_percent=0.10 # The minimum percent change required to count as "changed" in loss
 
 # These will be populated each training round and graphed at the end
 φ11_history=[]
@@ -95,7 +95,7 @@ end
 
 function predict(params)
     prob = ODEProblem(model, u0, (tstart,tend), params)
-    Array(concrete_solve(prob, Tsit5(), u0, params, saveat=tstart:sampling:tend, abstol=1e-8, reltol=1e-6, alg_hints=[:stiff]))
+    Array(concrete_solve(prob, Tsit5(), u0, params, saveat=tstart:sampling:tend, abstol=1e-8, reltol=1e-6, alg_hints=[:stiff], force_dtmin=true))
 end
 
 function loss(params)
@@ -166,11 +166,14 @@ function loss_callback(params, loss)
     global itrs
     
     itrs+=1
+    
     if size(loss_history)[1] > 0
-        loss_delt = loss - last(loss_history)
+        last_loss = last(loss_history)
     else
-        loss_delt = 0
+        last_loss = 0
     end
+    
+    loss_delt = loss - last_loss
     
     append!(loss_history, loss)
     append!(φ11_history, params[9] * 360)
@@ -178,7 +181,7 @@ function loss_callback(params, loss)
     append!(φ21_history, params[11] * 360)
     append!(φ22_history, params[12] * 360)
     
-    if loss_delt < 0 && abs.(loss_delt) >= loss_delt_threshold
+    if loss_delt < 0 && abs.(loss_delt) >= last_loss*loss_delt_threshold_percent
         loss_no_decrease = 0
     else
         loss_no_decrease += 1
@@ -200,7 +203,8 @@ function train_model(init_params)
     # TRICKY: It looks like the maxitrs parameter is overridden by the loss_callback
     # It looks like when mixing the stopping methods, it will RESTART training when reaching maxiters!
     # The argument is required, so lets just set it to a value it should never reach
-    res=DiffEqFlux.sciml_train(loss, init_params, ADAM(), maxiters= max_itrs+1, cb=loss_callback)
+    opt=AdaMax(0.005, (0.9, 0.8))
+    res=DiffEqFlux.sciml_train(loss, init_params, opt, maxiters= max_itrs+1, cb=loss_callback)
     return(res)
 end
 
@@ -246,7 +250,7 @@ function train_model_with_params(n, true_params)
 
     # Report learned parameters
     println("Finished training after $(itrs) iterations")
-    println("Learned params")
+    #println("Learned params")
     #report_params(u0, true_params, learned_params)
     println("Learned loss: $(loss(learned_params)[1])")
 
@@ -380,9 +384,13 @@ end
 function phi_plot(φ_history, subscript, expected)
     pl = histogram(φ_history,bins=0:5:360, label="", normalize=:probability)
     scatter!(pl, [expected], [0], label="Expected Phi")
+    learned = mod(last(φ_history), 360)
+    scatter!(pl, [learned], [0], label="Learned Phi")
+    plot!(pl, [cosd], 0:5:360, label="cos(Phi)") 
     xlabel!(pl,"Phi")
     ylabel!(pl,"Frequency")
-    title!(pl,"Phi $(subscript) history")
+    diff = round(abs(cosd(expected)-cosd(learned)), digits=2)
+    title!(pl,"Phi $(subscript) history. Diff: $(diff)")
     display(pl)
 end
 
