@@ -50,6 +50,10 @@ true_params_bistable =
     0.08,           # k2
     2.0,            # n1
     2.0,            # n2
+    1.0,            # r11
+    1.0,            # r12
+    1.0,            # r21
+    1.0,            # r22
     315.0 / 360.0,  # φ11
     135.0 / 360.0,  # φ12
     135.0 / 360.0,  # φ21
@@ -65,6 +69,10 @@ true_params_mutual =
     0.12,           # k2
     2.0,            # n1
     2.0,            # n2
+    1.0,            # r11
+    1.0,            # r12
+    1.0,            # r21
+    1.0,            # r22
     45.0  / 360.0,  # φ11
     135.0 / 360.0,  # φ12
     135.0 / 360.0,  # φ21
@@ -86,11 +94,11 @@ function model(du,u,p,t)
     # Negative values do not make sense in the context of this physical model. Take abs
     # TRICKY: For some reason, p sometimes assumes a negative value?
     p1, p2 = abs.(u)
-    α1, α2, β1, β2, k1, k2, n1, n2, φ11, φ12, φ21, φ22 = abs.(p)
+    α1, α2, β1, β2, k1, k2, n1, n2, r11, r12, r21, r22, φ11, φ12, φ21, φ22 = abs.(p)
 
      # Ignore the diffusion term for now
-    du[1] = α1*gen_reg(p1, k1, n1, φ11)*gen_reg(p2, k2, n2, φ12) - β1*p1 
-    du[2] = α2*gen_reg(p1, k1, n1, φ21)*gen_reg(p2, k2, n2, φ22) - β2*p2 
+    du[1] = α1*r11*gen_reg(p1, k1, n1, φ11)*r12*gen_reg(p2, k2, n2, φ12) - β1*p1 
+    du[2] = α2*r21*gen_reg(p1, k1, n1, φ21)*r22*gen_reg(p2, k2, n2, φ22) - β2*p2 
 end
 
 function predict(params)
@@ -141,8 +149,8 @@ end
 
 function report_params(u0, true_params, params)
     p1, p2 = u0
-    α1_t, α2_t, β1_t, β2_t, k1_t, k2_t, n1_t, n2_t, φ11_t, φ12_t, φ21_t, φ22_t = true_params
-    α1, α2, β1, β2, k1, k2, n1, n2, φ11, φ12, φ21, φ22 = params
+    α1_t, α2_t, β1_t, β2_t, k1_t, k2_t, n1_t, n2_t, r11_t, r12_t, r21_t, r22_t, φ11_t, φ12_t, φ21_t, φ22_t = true_params
+    α1, α2, β1, β2, k1, k2, n1, n2, r11, r12, r21, r22, φ11, φ12, φ21, φ22 = params
     println("p1: $(p1)")
     println("p2: $(p2)")
     println("α1_true / α1: $(α1_t) / $(α1)")
@@ -153,6 +161,10 @@ function report_params(u0, true_params, params)
     println("k2_true / k2: $(k2_t) / $(k2)")
     println("n1_true / n1: $(n1_t) / $(n1)")
     println("n2_true / n2: $(n2_t) / $(n2)")
+    println("r11_true / r11: $(r11_t) / $(r11)")
+    println("r12_true / r12: $(r12_t) / $(r12)")
+    println("r21_true / r21: $(r21_t) / $(r21)")
+    println("r22_true / r22: $(r22_t) / $(r22)")
     # These parameters are normalized between 0 and 1    
     println("φ11_true / φ11: $(φ11_t * 360) / $(φ11 * 360)")
     println("φ12_true / φ12: $(φ12_t * 360) / $(φ12 * 360)")
@@ -235,7 +247,8 @@ function train_model_with_params(n, true_params)
     reset_globals()
     
     # Generate starting conditions, random initial parameters and true data
-    init_params = generate_init_params(12)
+    n_params = size(true_params)[1]
+    init_params = generate_init_params(n_params)
     generate_init_conditions(n)
     generate_data(n, true_params)
         
