@@ -32,7 +32,7 @@ itrs=0 # The number of iterations we have been training for
 max_itrs=500 # The max number of iterations to train for
 loss_no_decrease_max = 100 # The number of iterations to stop at if loss doesnt decrease
 loss_no_decrease = 0 # The number of iterations we have not had loss decrease
-loss_delt_threshold_percent=0.10 # The minimum percent change required to count as "changed" in loss
+loss_delt_threshold_percent=0.05 # The minimum percent change required to count as "changed" in loss
 
 # These will be populated each training round and graphed at the end
 φ11_history=[]
@@ -78,6 +78,9 @@ true_params_mutual =
     135.0 / 360.0,  # φ21
     45.0  / 360.0]  # φ22
 
+# This is helpful for the loss function that will penalize more for incorrect phi
+true_params = []
+
 function hill_pos(p, k, n)
     p^n/(p^n + k^n)
 end
@@ -95,10 +98,12 @@ function model(du,u,p,t)
     # TRICKY: For some reason, p sometimes assumes a negative value?
     p1, p2 = abs.(u)
     α1, α2, β1, β2, k1, k2, n1, n2, r11, r12, r21, r22, φ11, φ12, φ21, φ22 = abs.(p)
+    #α1, α2, β1, β2, k1, k2, n1, n2 = [0.29, 0.19, 0.29, 0.19, 0.11, 0.08, 2, 2]
+    #φ11, φ12, φ21, φ22 = abs.(p)
 
      # Ignore the diffusion term for now
-    du[1] = α1*r11*gen_reg(p1, k1, n1, φ11)*r12*gen_reg(p2, k2, n2, φ12) - β1*p1 
-    du[2] = α2*r21*gen_reg(p1, k1, n1, φ21)*r22*gen_reg(p2, k2, n2, φ22) - β2*p2 
+    du[1] = α1*gen_reg(p1, k1, n1, φ11)*gen_reg(p2, k2, n2, φ12) - β1*p1 
+    du[2] = α2*gen_reg(p1, k1, n1, φ21)*gen_reg(p2, k2, n2, φ22) - β2*p2 
 end
 
 function predict(params)
@@ -115,6 +120,16 @@ function loss(params)
         prediction = predict(params)
         total_loss += sum(abs2, prediction - data)
     end
+
+    # Add more penalization for incorrect phi values
+    # Try penalizing without the normalization
+    φ11_err = abs2(360 * (params[9] - true_params[9]))
+    φ12_err = abs2(360 * (params[10] - true_params[10]))
+    φ21_err = abs2(360 * (params[11] - true_params[11]))
+    φ22_err = abs2(360 * (params[12] - true_params[12]))
+    φ_err = φ11_err + φ12_err + φ21_err + φ22_err
+    total_loss += φ_err
+
     return total_loss
 end
 
@@ -193,7 +208,13 @@ function loss_callback(params, loss)
     append!(φ21_history, params[11] * 360)
     append!(φ22_history, params[12] * 360)
     
-    if loss_delt < 0 && abs.(loss_delt) >= last_loss*loss_delt_threshold_percent
+    #append!(φ11_history, params[1] * 360)
+    #append!(φ12_history, params[2] * 360)
+    #append!(φ21_history, params[3] * 360)
+    #append!(φ22_history, params[4] * 360)
+    
+    # If loss changes more than 300, it is significant
+    if loss_delt < 0 && (abs.(loss_delt) >= last_loss*loss_delt_threshold_percent || abs.(loss_delt) >= 300)
         loss_no_decrease = 0
     else
         loss_no_decrease += 1
@@ -275,15 +296,23 @@ function train_model_with_params(n, true_params)
     phi_plot(φ12_history, "12", true_params[10] * 360)
     phi_plot(φ21_history, "21", true_params[11] * 360)
     phi_plot(φ22_history, "22", true_params[12] * 360)
+    #phi_plot(φ11_history, "11", true_params[1] * 360)
+    #phi_plot(φ12_history, "12", true_params[2] * 360)
+    #phi_plot(φ21_history, "21", true_params[3] * 360)
+    #phi_plot(φ22_history, "22", true_params[4] * 360)
     phasePlot(true_params, learned_params)
 end
 
 function train_mutual_bistable(n)
+    global true_params
+    true_params = true_params_bistable
     train_model_with_params(n, true_params_bistable)
 end
 
 function train_mutual_inhib(n)
-    train_model_with_params(n, true_params_bistable)
+    global true_params
+    true_params = true_params_mutual
+    train_model_with_params(n, true_params_mutual)
 end
 
 # The plot that shows how the generated data compares to the function defined by params
