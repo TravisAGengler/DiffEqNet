@@ -35,48 +35,50 @@ loss_no_decrease = 0 # The number of iterations we have not had loss decrease
 loss_delt_threshold_percent=0.05 # The minimum percent change required to count as "changed" in loss
 
 # These will be populated each training round and graphed at the end
-φ11_history=[]
-φ12_history=[]
-φ21_history=[]
-φ22_history=[]
+#φ11_history=[]
+#φ12_history=[]
+#φ21_history=[]
+#φ22_history=[]
 
 # The true parameters for a system of two proteins with a bistable relationship
-true_params_bistable = 
-   [0.29,           # α1
-    0.19,           # α2
-    0.29,           # β1
-    0.19,           # β2
-    0.11,           # k1
-    0.08,           # k2
-    2.0,            # n1
-    2.0,            # n2
-    1.0,            # r11
-    1.0,            # r12
-    1.0,            # r21
-    1.0,            # r22
-    315.0 / 360.0,  # φ11
-    135.0 / 360.0,  # φ12
-    135.0 / 360.0,  # φ21
-    315.0 / 360.0]  # φ22
+true_params_bistable = [
+    0.29, # α1
+    0.19, # α2
+    0.29, # β1
+    0.19, # β2
+    0.11, # k1
+    0.08, # k2
+    2.00, # n1
+    2.00, # n2
+    1.00, # φc11
+    0.00, # φs11
+    0.00, # φc12
+    1.00, # φs12
+    0.00, # φc21
+    1.00, # φs21
+    1.00, # φc12
+    0.00  # φs22
+]  
 
 # The true parameters for a system of two proteins with a relationship of mutual inhibition
-true_params_mutual = 
-   [0.29,           # α1
-    0.19,           # α2
-    0.26,           # β1
-    0.19,           # β2
-    0.11,           # k1
-    0.12,           # k2
-    2.0,            # n1
-    2.0,            # n2
-    1.0,            # r11
-    1.0,            # r12
-    1.0,            # r21
-    1.0,            # r22
-    45.0  / 360.0,  # φ11
-    135.0 / 360.0,  # φ12
-    135.0 / 360.0,  # φ21
-    45.0  / 360.0]  # φ22
+true_params_mutual = [
+    0.29, # α1
+    0.19, # α2
+    0.26, # β1
+    0.19, # β2
+    0.11, # k1
+    0.12, # k2
+    2.00, # n1
+    2.00, # n2
+    1.00, # φc11
+    1.00, # φs11
+    0.00, # φc12
+    1.00, # φs12
+    0.00, # φc21
+    1.00, # φs21
+    1.00, # φc12
+    1.00  # φs22
+]  
 
 # This is helpful for the loss function that will penalize more for incorrect phi
 true_params = []
@@ -93,17 +95,24 @@ function gen_reg(p, k, n, φ)
     (hill_pos(p, k, n) * (√(1/2)*cosd(φ*360) + 1/2)) + (hill_neg(p, k, n) * (√(1/2)*sind(φ*360) + 1/2))
 end
 
+function gen_reg_collapse(p, k, n, φc, φs)
+    (hill_pos(p, k, n) * φc) + (hill_neg(p, k, n) * φs)
+end
+
 function model(du,u,p,t)
     # Negative values do not make sense in the context of this physical model. Take abs
     # TRICKY: For some reason, p sometimes assumes a negative value?
     p1, p2 = abs.(u)
-    α1, α2, β1, β2, k1, k2, n1, n2, r11, r12, r21, r22, φ11, φ12, φ21, φ22 = abs.(p)
+    #α1, α2, β1, β2, k1, k2, n1, n2, r11, r12, r21, r22, φ11, φ12, φ21, φ22 = abs.(p)
     #α1, α2, β1, β2, k1, k2, n1, n2 = [0.29, 0.19, 0.29, 0.19, 0.11, 0.08, 2, 2]
     #φ11, φ12, φ21, φ22 = abs.(p)
-
+    α1, α2, β1, β2, k1, k2, n1, n2, φc11, φs11, φc12, φs12, φc21, φs21, φc22, φs22 = abs.(p)
+    
      # Ignore the diffusion term for now
-    du[1] = α1*gen_reg(p1, k1, n1, φ11)*gen_reg(p2, k2, n2, φ12) - β1*p1 
-    du[2] = α2*gen_reg(p1, k1, n1, φ21)*gen_reg(p2, k2, n2, φ22) - β2*p2 
+    #du[1] = α1*gen_reg(p1, k1, n1, φ11)*gen_reg(p2, k2, n2, φ12) - β1*p1 
+    #du[2] = α2*gen_reg(p1, k1, n1, φ21)*gen_reg(p2, k2, n2, φ22) - β2*p2 
+    du[1] = α1*gen_reg_collapse(p1, k1, n1, φc11, φs11)*gen_reg_collapse(p2, k2, n2, φc12, φs12) - β1*p1 
+    du[2] = α2*gen_reg_collapse(p1, k1, n1, φc21, φs21)*gen_reg_collapse(p2, k2, n2, φc22, φs22) - β2*p2
 end
 
 function predict(params)
@@ -123,12 +132,12 @@ function loss(params)
 
     # Add more penalization for incorrect phi values
     # Try penalizing without the normalization
-    φ11_err = abs2(360 * (params[9] - true_params[9]))
-    φ12_err = abs2(360 * (params[10] - true_params[10]))
-    φ21_err = abs2(360 * (params[11] - true_params[11]))
-    φ22_err = abs2(360 * (params[12] - true_params[12]))
-    φ_err = φ11_err + φ12_err + φ21_err + φ22_err
-    total_loss += φ_err
+    #φ11_err = abs2(360 * (params[9] - true_params[9]))
+    #φ12_err = abs2(360 * (params[10] - true_params[10]))
+    #φ21_err = abs2(360 * (params[11] - true_params[11]))
+    #φ22_err = abs2(360 * (params[12] - true_params[12]))
+    #φ_err = φ11_err + φ12_err + φ21_err + φ22_err
+    #total_loss += φ_err
 
     return total_loss
 end
@@ -164,8 +173,11 @@ end
 
 function report_params(u0, true_params, params)
     p1, p2 = u0
-    α1_t, α2_t, β1_t, β2_t, k1_t, k2_t, n1_t, n2_t, r11_t, r12_t, r21_t, r22_t, φ11_t, φ12_t, φ21_t, φ22_t = true_params
-    α1, α2, β1, β2, k1, k2, n1, n2, r11, r12, r21, r22, φ11, φ12, φ21, φ22 = params
+    #α1_t, α2_t, β1_t, β2_t, k1_t, k2_t, n1_t, n2_t, r11_t, r12_t, r21_t, r22_t, φ11_t, φ12_t, φ21_t, φ22_t = true_params
+    #α1, α2, β1, β2, k1, k2, n1, n2, r11, r12, r21, r22, φ11, φ12, φ21, φ22 = params
+    
+    α1_t, α2_t, β1_t, β2_t, k1_t, k2_t, n1_t, n2_t, φc11_t, φs11_t, φc12_t, φs12_t, φc21_t, φs21_t, φc22_t, φs22_t = true_params
+    α1, α2, β1, β2, k1, k2, n1, n2, φc11, φs11, φc12, φs12, φc21, φs21, φc22, φs22 = params
     println("p1: $(p1)")
     println("p2: $(p2)")
     println("α1_true / α1: $(α1_t) / $(α1)")
@@ -176,15 +188,16 @@ function report_params(u0, true_params, params)
     println("k2_true / k2: $(k2_t) / $(k2)")
     println("n1_true / n1: $(n1_t) / $(n1)")
     println("n2_true / n2: $(n2_t) / $(n2)")
-    println("r11_true / r11: $(r11_t) / $(r11)")
-    println("r12_true / r12: $(r12_t) / $(r12)")
-    println("r21_true / r21: $(r21_t) / $(r21)")
-    println("r22_true / r22: $(r22_t) / $(r22)")
-    # These parameters are normalized between 0 and 1    
-    println("φ11_true / φ11: $(φ11_t * 360) / $(φ11 * 360)")
-    println("φ12_true / φ12: $(φ12_t * 360) / $(φ12 * 360)")
-    println("φ21_true / φ21: $(φ21_t * 360) / $(φ21 * 360)")
-    println("φ22_true / φ22: $(φ22_t * 360) / $(φ22 * 360)")
+    
+    println("φc11_true / : $(φc11_t) / $(φc11)")
+    println("φs11_true / : $(φs11_t) / $(φs11)")
+    println("φc12_true / : $(φc12_t) / $(φc12)")
+    println("φs12_true / : $(φs12_t) / $(φs12)")
+    println("φc21_true / : $(φc21_t) / $(φc21)")
+    println("φs21_true / : $(φs21_t) / $(φs21)")
+    println("φc22_true / : $(φc22_t) / $(φc22)")
+    println("φs22_true / : $(φs22_t) / $(φs22)")
+    
 end
 
 # This callback has two purposes. Early stopping and recording history of parameters
@@ -203,10 +216,10 @@ function loss_callback(params, loss)
     loss_delt = loss - last_loss
     
     append!(loss_history, loss)
-    append!(φ11_history, params[9] * 360)
-    append!(φ12_history, params[10] * 360)
-    append!(φ21_history, params[11] * 360)
-    append!(φ22_history, params[12] * 360)
+    #append!(φ11_history, params[9] * 360)
+    #append!(φ12_history, params[10] * 360)
+    #append!(φ21_history, params[11] * 360)
+    #append!(φ22_history, params[12] * 360)
     
     #append!(φ11_history, params[1] * 360)
     #append!(φ12_history, params[2] * 360)
@@ -247,20 +260,20 @@ function reset_globals()
     global loss_no_decrease
     global itrs
     global loss_history
-    global φ11_history
-    global φ12_history
-    global φ21_history
-    global φ22_history
+    #global φ11_history
+    #global φ12_history
+    #global φ21_history
+    #global φ22_history
     
     all_u0=[] 
     all_data=[] 
     loss_no_decrease = 0
     itrs = 0
     loss_history=[] 
-    φ11_history=[]
-    φ12_history=[]
-    φ21_history=[]
-    φ22_history=[]
+    #φ11_history=[]
+    #φ12_history=[]
+    #φ21_history=[]
+    #φ22_history=[]
 end
 
 function train_model_with_params(n, true_params)   
@@ -285,17 +298,17 @@ function train_model_with_params(n, true_params)
     # Report learned parameters
     println("Finished training after $(itrs) iterations")
     #println("Learned params")
-    #report_params(u0, true_params, learned_params)
+    report_params(u0, true_params, learned_params)
     println("Learned loss: $(loss(learned_params)[1])")
 
     # Make plots
     dataPlot(learned_params)
     validationPlot(true_params, learned_params)
     lossPlot(loss_history)
-    phi_plot(φ11_history, "11", true_params[9] * 360)
-    phi_plot(φ12_history, "12", true_params[10] * 360)
-    phi_plot(φ21_history, "21", true_params[11] * 360)
-    phi_plot(φ22_history, "22", true_params[12] * 360)
+    #phi_plot(φ11_history, "11", true_params[9] * 360)
+    #phi_plot(φ12_history, "12", true_params[10] * 360)
+    #phi_plot(φ21_history, "21", true_params[11] * 360)
+    #phi_plot(φ22_history, "22", true_params[12] * 360)
     #phi_plot(φ11_history, "11", true_params[1] * 360)
     #phi_plot(φ12_history, "12", true_params[2] * 360)
     #phi_plot(φ21_history, "21", true_params[3] * 360)
